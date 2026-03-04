@@ -49,17 +49,11 @@ This will:
 - Copy scripts to `~/.local/bin/`
 - Install a sample `sway-session-appmap.json` (skipped if one already exists)
 - Enable the systemd auto-save timer (every 5 minutes)
-- Print the Sway config lines you need to add
+- Add `exec ~/.local/bin/sway-session-restore.py` to your Sway config (skipped if already present)
 
-### Add to Sway config
+### Optional keybindings
 
-Add this line to `~/.config/sway/config` to restore the session on startup:
-
-```bash
-exec ~/.local/bin/sway-session-restore.py
-```
-
-Optionally, add keybindings for manual save and save-on-exit (adjust keys to your preference):
+Add these to `~/.config/sway/config` if you want manual save and save-on-exit (adjust keys to your preference):
 
 ```bash
 # Save session and exit Sway
