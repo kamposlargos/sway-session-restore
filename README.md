@@ -53,12 +53,15 @@ This will:
 
 ### Add to Sway config
 
-Add the following to `~/.config/sway/config` (adjust keybindings to your preference):
+Add this line to `~/.config/sway/config` to restore the session on startup:
 
 ```bash
-# Restore session on startup
 exec ~/.local/bin/sway-session-restore.py
+```
 
+Optionally, add keybindings for manual save and save-on-exit (adjust keys to your preference):
+
+```bash
 # Save session and exit Sway
 bindsym $mod+Shift+e exec ~/.local/bin/sway-session-save.py --force && swaymsg exit
 
