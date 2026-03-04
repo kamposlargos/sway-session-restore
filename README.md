@@ -37,17 +37,36 @@ Uses a **2-pass algorithm** to accurately reconstruct layouts:
 
 ## Installation
 
-### 1. Copy scripts
+### Quick install
 
 ```bash
-cp sway-session-save.py ~/.local/bin/
-cp sway-session-restore.py ~/.local/bin/
-cp sway-session-appmap.json ~/.local/bin/
-chmod +x ~/.local/bin/sway-session-save.py
-chmod +x ~/.local/bin/sway-session-restore.py
+git clone https://github.com/kamposlargos/sway-session-restore.git
+cd sway-session-restore
+./install.sh
 ```
 
-### 2. Configure app mapping
+This will:
+- Copy scripts to `~/.local/bin/`
+- Install a sample `sway-session-appmap.json` (skipped if one already exists)
+- Enable the systemd auto-save timer (every 5 minutes)
+- Print the Sway config lines you need to add
+
+### Add to Sway config
+
+Add the following to `~/.config/sway/config`:
+
+```bash
+# Restore session on startup
+exec ~/.local/bin/sway-session-restore.py
+
+# Save session and exit
+bindsym $mod+Shift+e exec ~/.local/bin/sway-session-save.py --force && swaymsg exit
+
+# Manual save
+bindsym $mod+Shift+s exec ~/.local/bin/sway-session-save.py --force && notify-send "Session saved"
+```
+
+### Configure app mapping
 
 Edit `~/.local/bin/sway-session-appmap.json` to match your apps:
 
@@ -67,28 +86,9 @@ Edit `~/.local/bin/sway-session-appmap.json` to match your apps:
 
 > **Tip:** Run `swaymsg -t get_tree | jq '.. | .app_id? // empty'` to discover app_ids for your running windows.
 
-### 3. Add to Sway config
+### Auto-save
 
-```bash
-# Restore session on startup
-exec ~/.local/bin/sway-session-restore.py
-
-# Save session and exit (e.g., bind to $mod+Shift+e)
-bindsym $mod+Shift+e exec ~/.local/bin/sway-session-save.py --force && swaymsg exit
-
-# Manual save (e.g., bind to $mod+Shift+s)
-bindsym $mod+Shift+s exec ~/.local/bin/sway-session-save.py --force && notify-send "Session saved"
-```
-
-### 4. Auto-save timer (optional)
-
-```bash
-cp sway-session-save.service ~/.config/systemd/user/
-cp sway-session-save.timer ~/.config/systemd/user/
-systemctl --user enable --now sway-session-save.timer
-```
-
-The timer saves every 5 minutes. Auto-save uses the safety check (no `--force`), so it won't overwrite a good session if most windows are closed.
+The installer enables a systemd timer that saves every 5 minutes. Auto-save uses a safety check (no `--force`), so it won't overwrite a good session if most windows are closed.
 
 ## File Locations
 
