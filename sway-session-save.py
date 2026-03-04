@@ -132,23 +132,36 @@ def resolve_command(
         if re.search(pat_str, identifier):
             return cmd
 
-    # 3. Chrome/Chromium PWA auto-detection
+    # 3. Chrome/Chromium browser auto-detection (non-PWA)
+    chrome_browsers = {
+        "google-chrome": "google-chrome-stable",
+        "Google-chrome": "google-chrome-stable",
+        "chromium": "chromium",
+        "Chromium": "chromium",
+        "chromium-browser": "chromium-browser",
+    }
+    if identifier in chrome_browsers:
+        browser = chrome_browsers[identifier]
+        if shutil.which(browser):
+            return [browser]
+
+    # 4. Chrome/Chromium PWA auto-detection
     chrome_cmd = resolve_chrome_pwa(identifier)
     if chrome_cmd:
         return chrome_cmd
 
-    # 4. Electron app auto-detection
+    # 5. Electron app auto-detection
     electron_cmd = resolve_electron(identifier, pid)
     if electron_cmd:
         return electron_cmd
 
-    # 5. Get from /proc/PID/cmdline
+    # 6. Get from /proc/PID/cmdline
     if pid:
         cmd = get_command_from_pid(pid)
         if cmd:
             return cmd
 
-    # 6. Fallback: use identifier as command
+    # 7. Fallback: use identifier as command
     return [identifier]
 
 
@@ -235,10 +248,19 @@ def process_workspace(
     if not nodes and not floating_nodes:
         return None
 
+    ws_layout = ws.get("layout", "splith")
+
+    # Flatten: if there's a single container child with the same layout as the
+    # workspace, promote its children to workspace level
+    if (len(nodes) == 1
+            and nodes[0].get("type") == "container"
+            and nodes[0].get("layout") == ws_layout):
+        nodes = nodes[0]["nodes"]
+
     return {
         "name": name,
         "output": ws.get("output", ""),
-        "layout": ws.get("layout", "splith"),
+        "layout": ws_layout,
         "focused": ws.get("focused", False),
         "nodes": nodes,
         "floating_nodes": floating_nodes,
