@@ -1,0 +1,9 @@
+[Unit]
+Description=Sway session auto-save (every 5 minutes)
+
+[Timer]
+OnActiveSec=5min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target

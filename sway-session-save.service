@@ -1,0 +1,7 @@
+[Unit]
+Description=Sway session auto-save
+ConditionEnvironment=SWAYSOCK
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/sway-session-save.py

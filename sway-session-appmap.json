@@ -1,0 +1,16 @@
+{
+    "_comment": "app_id -> launch command overrides. Used when /proc/PID/cmdline is unreliable.",
+    "_note": "Chrome PWA: app_id format is chrome-URL__-Profile_N. Use regex patterns in _patterns.",
+    "_patterns": {
+        "^chrome-.*__": ["google-chrome-stable", "about:blank"]
+    },
+    "com.mitchellh.ghostty": ["ghostty"],
+    "Alacritty": ["alacritty"],
+    "foot": ["foot"],
+    "thunar": ["thunar"],
+    "firefox": ["firefox"],
+    "google-chrome": ["google-chrome-stable"],
+    "org.keepassxc.KeePassXC": ["keepassxc"],
+    "code": ["code"],
+    "org.gnome.Nautilus": ["nautilus"]
+}
