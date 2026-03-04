@@ -53,18 +53,30 @@ This will:
 
 ### Add to Sway config
 
-Add the following to `~/.config/sway/config`:
+Add the following to `~/.config/sway/config` (adjust keybindings to your preference):
 
 ```bash
 # Restore session on startup
 exec ~/.local/bin/sway-session-restore.py
 
-# Save session and exit
+# Save session and exit Sway
 bindsym $mod+Shift+e exec ~/.local/bin/sway-session-save.py --force && swaymsg exit
 
 # Manual save
 bindsym $mod+Shift+s exec ~/.local/bin/sway-session-save.py --force && notify-send "Session saved"
 ```
+
+## Usage
+
+### Saving
+
+- **Auto-save**: The systemd timer saves every 5 minutes automatically. If the window count drops below 50% of the previous save, the save is skipped to prevent overwriting a good session.
+- **Manual save**: Press your save keybinding (e.g., `$mod+Shift+s`) or run `~/.local/bin/sway-session-save.py --force` directly. The `--force` flag bypasses the safety check.
+- **Save on exit**: Bind a key (e.g., `$mod+Shift+e`) to save and exit Sway in one step.
+
+### Restoring
+
+Session is restored automatically on Sway startup via `exec` in your config. You can also run `~/.local/bin/sway-session-restore.py` manually at any time.
 
 ### App mapping (optional)
 
@@ -90,9 +102,6 @@ The app mapping file (`sway-session-appmap.json`) is only needed to **override**
 
 > **Tip:** Run `swaymsg -t get_tree | jq '.. | .app_id? // empty'` to discover app_ids for your running windows.
 
-### Auto-save
-
-The installer enables a systemd timer that saves every 5 minutes. Auto-save uses a safety check (no `--force`), so it won't overwrite a good session if most windows are closed.
 
 ## File Locations
 
