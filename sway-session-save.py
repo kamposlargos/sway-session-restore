@@ -70,6 +70,52 @@ def get_identifier(node: dict) -> tuple[str | None, str]:
     return None, ""
 
 
+def resolve_chrome_pwa(identifier: str) -> list[str] | None:
+    """Auto-resolve Chrome/Chromium PWA commands from app_id.
+    Chrome PWA app_id format: chrome-DOMAIN__-Profile_N
+    Example: chrome-claude.ai__-Profile_20 -> google-chrome-stable --app=https://claude.ai --profile-directory=Profile 20"""
+    m = re.match(r"^chrome-(.+)__-(.+)$", identifier)
+    if not m:
+        return None
+    domain = m.group(1)
+    profile = m.group(2).replace("_", " ")
+    # Detect browser command
+    browser = "google-chrome-stable"
+    for candidate in ["google-chrome-stable", "google-chrome", "chromium", "chromium-browser"]:
+        if shutil.which(candidate):
+            browser = candidate
+            break
+    return [browser, f"--app=https://{domain}", f"--profile-directory={profile}"]
+
+
+def resolve_electron(identifier: str, pid: int | None) -> list[str] | None:
+    """Auto-resolve Electron app commands.
+    Electron apps have unhelpful /proc/PID/cmdline (e.g., /usr/lib/electron/electron ...).
+    Map known app_ids to their launcher commands."""
+    # Well-known Electron app_id -> command mappings
+    electron_apps = {
+        "code-oss": "code",
+        "code": "code",
+        "code-insiders": "code-insiders",
+        "obsidian": "obsidian",
+        "discord": "discord",
+        "slack": "slack",
+        "signal": "signal-desktop",
+        "spotify": "spotify",
+    }
+    cmd = electron_apps.get(identifier)
+    if cmd and shutil.which(cmd):
+        return [cmd]
+    # Heuristic: if /proc/PID/cmdline contains /electron, treat as Electron
+    if pid:
+        proc_cmd = get_command_from_pid(pid)
+        if proc_cmd and any("electron" in arg for arg in proc_cmd[:2]):
+            # Try identifier as command
+            if shutil.which(identifier):
+                return [identifier]
+    return None
+
+
 def resolve_command(
     identifier: str,
     pid: int | None,
@@ -77,22 +123,32 @@ def resolve_command(
     patterns: list[tuple[str, list[str]]],
 ) -> list[str]:
     """Resolve the launch command for an app."""
-    # Direct map takes priority
+    # 1. Appmap direct map (user override, highest priority)
     if identifier in appmap:
         return appmap[identifier]
 
-    # Pattern matching
+    # 2. Appmap pattern matching (user override)
     for pat_str, cmd in patterns:
         if re.search(pat_str, identifier):
             return cmd
 
-    # Get from /proc/PID/cmdline
+    # 3. Chrome/Chromium PWA auto-detection
+    chrome_cmd = resolve_chrome_pwa(identifier)
+    if chrome_cmd:
+        return chrome_cmd
+
+    # 4. Electron app auto-detection
+    electron_cmd = resolve_electron(identifier, pid)
+    if electron_cmd:
+        return electron_cmd
+
+    # 5. Get from /proc/PID/cmdline
     if pid:
         cmd = get_command_from_pid(pid)
         if cmd:
             return cmd
 
-    # Fallback: use identifier as command
+    # 6. Fallback: use identifier as command
     return [identifier]
 
 

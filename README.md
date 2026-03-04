@@ -68,23 +68,25 @@ bindsym $mod+Shift+s exec ~/.local/bin/sway-session-save.py --force && notify-se
 
 ### App mapping (optional)
 
-**Most apps work out of the box.** The save script automatically detects launch commands from `/proc/PID/cmdline`. The app mapping file (`sway-session-appmap.json`) is only needed to override commands when auto-detection doesn't work correctly — most commonly for Chrome/Chromium PWAs.
+**Most apps work out of the box** without any configuration:
 
-To customize, edit `~/.local/bin/sway-session-appmap.json`:
+- **Standard apps** (terminals, file managers, browsers, etc.) — detected automatically via `/proc/PID/cmdline`
+- **Chrome/Chromium PWAs** — detected automatically from `app_id` pattern (`chrome-DOMAIN__-Profile_N` → `--app=https://DOMAIN --profile-directory=Profile N`)
+- **Electron apps** (VS Code, Obsidian, Discord, etc.) — resolved from a built-in mapping of known app_ids
+
+The app mapping file (`sway-session-appmap.json`) is only needed to **override** auto-detection for edge cases. To customize, edit `~/.local/bin/sway-session-appmap.json`:
 
 ```json
 {
     "_patterns": {
-        "^chrome-.*__": ["google-chrome-stable", "about:blank"]
+        "^MyApp$": ["my-app", "--some-flag"]
     },
-    "com.mitchellh.ghostty": ["ghostty"],
-    "foot": ["foot"],
-    "firefox": ["firefox"]
+    "some.custom.app": ["custom-command"]
 }
 ```
 
 - **Direct entries**: `"app_id": ["command", "args"]` — override for a specific app_id
-- **`_patterns`**: regex patterns matched against `app_id` — useful for Chrome PWAs where `app_id` is dynamic (e.g., `chrome-github.com__-Profile_1`)
+- **`_patterns`**: regex patterns matched against `app_id`
 
 > **Tip:** Run `swaymsg -t get_tree | jq '.. | .app_id? // empty'` to discover app_ids for your running windows.
 
@@ -103,7 +105,9 @@ The installer enables a systemd timer that saves every 5 minutes. Auto-save uses
 
 ## Chrome / Chromium PWA Tips
 
-Chrome PWAs have dynamic `app_id` values like `chrome-docs.google.com__-Profile_1`. Use regex patterns in `_patterns` to match them:
+Chrome PWAs are **automatically detected** from their `app_id` (format: `chrome-DOMAIN__-Profile_N`). The save script generates the correct `--app=https://DOMAIN --profile-directory=Profile N` command automatically.
+
+If you need to customize a specific PWA (e.g., to add `--class`), use an appmap override:
 
 ```json
 {
@@ -113,13 +117,12 @@ Chrome PWAs have dynamic `app_id` values like `chrome-docs.google.com__-Profile_
             "--app=https://docs.google.com",
             "--class=GoogleDocs",
             "--profile-directory=Default"
-        ],
-        "^chrome-.*__": ["google-chrome-stable", "about:blank"]
+        ]
     }
 }
 ```
 
-Patterns are evaluated in order. Place specific patterns before catch-all patterns.
+Appmap overrides take priority over auto-detection. Patterns are evaluated in order.
 
 ## Limitations
 
