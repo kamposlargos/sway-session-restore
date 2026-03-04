@@ -66,9 +66,11 @@ bindsym $mod+Shift+e exec ~/.local/bin/sway-session-save.py --force && swaymsg e
 bindsym $mod+Shift+s exec ~/.local/bin/sway-session-save.py --force && notify-send "Session saved"
 ```
 
-### Configure app mapping
+### App mapping (optional)
 
-Edit `~/.local/bin/sway-session-appmap.json` to match your apps:
+**Most apps work out of the box.** The save script automatically detects launch commands from `/proc/PID/cmdline`. The app mapping file (`sway-session-appmap.json`) is only needed to override commands when auto-detection doesn't work correctly — most commonly for Chrome/Chromium PWAs.
+
+To customize, edit `~/.local/bin/sway-session-appmap.json`:
 
 ```json
 {
@@ -81,7 +83,7 @@ Edit `~/.local/bin/sway-session-appmap.json` to match your apps:
 }
 ```
 
-- **Direct entries**: `"app_id": ["command", "args"]`
+- **Direct entries**: `"app_id": ["command", "args"]` — override for a specific app_id
 - **`_patterns`**: regex patterns matched against `app_id` — useful for Chrome PWAs where `app_id` is dynamic (e.g., `chrome-github.com__-Profile_1`)
 
 > **Tip:** Run `swaymsg -t get_tree | jq '.. | .app_id? // empty'` to discover app_ids for your running windows.
