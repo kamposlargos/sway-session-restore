@@ -13,8 +13,10 @@ mkdir -p "$BIN_DIR"
 
 cp "$SCRIPT_DIR/sway-session-save.py" "$BIN_DIR/"
 cp "$SCRIPT_DIR/sway-session-restore.py" "$BIN_DIR/"
+cp "$SCRIPT_DIR/sway-shutdown.sh" "$BIN_DIR/"
 chmod +x "$BIN_DIR/sway-session-save.py"
 chmod +x "$BIN_DIR/sway-session-restore.py"
+chmod +x "$BIN_DIR/sway-shutdown.sh"
 echo "[ok] Installed scripts to $BIN_DIR/"
 
 # 2. Install appmap (skip if already exists)
@@ -62,3 +64,7 @@ echo 'bindsym $mod+Shift+e exec ~/.local/bin/sway-session-save.py --force && swa
 echo ''
 echo '# Manual save'
 echo 'bindsym $mod+Shift+s exec ~/.local/bin/sway-session-save.py --force && notify-send "Session saved"'
+echo ''
+echo '# Shutdown / Reboot (save session + close apps gracefully)'
+echo 'bindsym $mod+Shift+p exec ~/.local/bin/sway-shutdown.sh poweroff'
+echo 'bindsym $mod+Shift+r exec ~/.local/bin/sway-shutdown.sh reboot'
