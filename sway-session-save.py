@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -116,11 +117,122 @@ def resolve_electron(identifier: str, pid: int | None) -> list[str] | None:
     return None
 
 
+# VS Code 系ウィンドウの app_id と、対応する起動コマンド
+VSCODE_COMMANDS = {
+    "code-oss": "code",
+    "code": "code",
+    "code-insiders": "code-insiders",
+}
+
+# VS Code の storage.json（ワークスペース名の解決に使う）
+VSCODE_STORAGE_FILES = [
+    Path.home() / ".config" / "Code - OSS" / "User" / "globalStorage" / "storage.json",
+    Path.home() / ".config" / "Code" / "User" / "globalStorage" / "storage.json",
+]
+
+_vscode_ws_map: dict[str, str] | None = None
+
+
+def load_vscode_workspace_map() -> dict[str, str]:
+    """VS Code の storage.json から「ワークスペース名 -> .code-workspace のパス」を作る。
+    ウィンドウタイトルにはワークスペース名しか出ないため、起動引数に渡すパスをここで引く。"""
+    mapping: dict[str, str] = {}
+    for path in VSCODE_STORAGE_FILES:
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+
+        uris: list[str] = []
+        ws_state = data.get("windowsState") or {}
+        windows = list(ws_state.get("openedWindows") or [])
+        last_active = ws_state.get("lastActiveWindow")
+        if last_active:
+            windows.append(last_active)
+        for window in windows:
+            identifier = (window or {}).get("workspaceIdentifier") or {}
+            if identifier.get("configURIPath"):
+                uris.append(identifier["configURIPath"])
+        for window in (data.get("backupWorkspaces") or {}).get("workspaces") or []:
+            if window.get("configURIPath"):
+                uris.append(window["configURIPath"])
+
+        for uri in uris:
+            if not uri.startswith("file://"):
+                continue
+            ws_path = urllib.parse.unquote(uri[len("file://"):])
+            name = Path(ws_path).name
+            if name.endswith(".code-workspace"):
+                mapping.setdefault(name[: -len(".code-workspace")], ws_path)
+
+    # storage.json には最近使ったものしか載らないため、
+    # 判明したディレクトリ内の .code-workspace をすべて拾って補う
+    for directory in {Path(p).parent for p in list(mapping.values())}:
+        try:
+            entries = sorted(directory.glob("*.code-workspace"))
+        except OSError:
+            continue
+        for entry in entries:
+            mapping.setdefault(entry.stem, str(entry))
+    return mapping
+
+
+def get_vscode_workspace_map() -> dict[str, str]:
+    """ワークスペース名の対応表を一度だけ読み込む。"""
+    global _vscode_ws_map
+    if _vscode_ws_map is None:
+        _vscode_ws_map = load_vscode_workspace_map()
+    return _vscode_ws_map
+
+
+def vscode_workspace_name(title: str) -> str | None:
+    """VS Code のウィンドウタイトルからワークスペース名を取り出す。
+    例:「カンポス (Workspace) - Code - OSS」->「カンポス」
+       「index.php - ナビス (Workspace) - Code - OSS」->「ナビス」
+    ワークスペースを開いていないウィンドウでは None を返す。"""
+    m = re.match(r"^(.*) \(Workspace\)(?: - .*)?$", title)
+    if not m:
+        return None
+    # ファイルを開いていると「<ファイル名> - <ワークスペース名>」になるため末尾を取る
+    return m.group(1).rsplit(" - ", 1)[-1].strip() or None
+
+
+def find_vscode_workspace_path(title: str) -> str | None:
+    """タイトルに対応する .code-workspace のパスを探す。
+    ワークスペース名自体に「 - 」が含まれる場合に備えて、
+    区切りの候補を長い方から順に対応表と照合する。"""
+    m = re.match(r"^(.*) \(Workspace\)(?: - .*)?$", title)
+    if not m:
+        return None
+    ws_map = get_vscode_workspace_map()
+    parts = m.group(1).split(" - ")
+    for i in range(len(parts)):
+        candidate = " - ".join(parts[i:]).strip()
+        if candidate in ws_map:
+            return ws_map[candidate]
+    return None
+
+
+def resolve_vscode(identifier: str, title: str) -> list[str] | None:
+    """VS Code ウィンドウの起動コマンドを、開いているワークスペースを含めて決める。
+    引数なしの code だけを保存すると、復元時に空ウィンドウが増えるため。"""
+    base = VSCODE_COMMANDS.get(identifier)
+    if not base or not shutil.which(base):
+        return None
+    ws_path = find_vscode_workspace_path(title)
+    if ws_path:
+        return [base, ws_path]
+    return [base]
+
+
 def resolve_command(
     identifier: str,
     pid: int | None,
     appmap: dict,
     patterns: list[tuple[str, list[str]]],
+    title: str = "",
 ) -> list[str]:
     """Resolve the launch command for an app."""
     # 1. Appmap direct map (user override, highest priority)
@@ -131,6 +243,11 @@ def resolve_command(
     for pat_str, cmd in patterns:
         if re.search(pat_str, identifier):
             return cmd
+
+    # 2.5 VS Code: 開いているワークスペースを引数に含める
+    vscode_cmd = resolve_vscode(identifier, title)
+    if vscode_cmd:
+        return vscode_cmd
 
     # 3. Chrome/Chromium browser auto-detection (non-PWA)
     chrome_browsers = {
@@ -177,7 +294,8 @@ def process_node(
     # Window node (has app_id or class)
     if identifier:
         pid = node.get("pid")
-        command = resolve_command(identifier, pid, appmap, patterns)
+        title = node.get("name") or ""
+        command = resolve_command(identifier, pid, appmap, patterns, title)
         is_floating = node.get("type") == "floating_con"
 
         result = {

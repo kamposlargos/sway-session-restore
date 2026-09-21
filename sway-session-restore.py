@@ -10,6 +10,7 @@ Focus workspace -> set split direction -> launch apps (auto-placed at focus)
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -105,9 +106,142 @@ def wait_for_new_window(known_ids: set[int]) -> int | None:
     return None
 
 
-def launch_here(command: list[str], app_id: str) -> int | None:
+# --- VS Code の特別扱い ---------------------------------------------------
+# VS Code は window.restoreWindows の既定値 "all" により、起動時に前回のウィンドウを
+# 自分で復元する。ウィンドウごとに code を実行すると、2 回目以降は既に動いている
+# インスタンスへの呼び出しとなり、空ウィンドウが増えていく。
+# そのため起動は 1 回だけにして、本体が復元したウィンドウをタイトルで突き合わせ、
+# 各ワークスペースへ移動して使う。
+
+VSCODE_APP_IDS = {"code-oss", "code", "code-insiders"}
+VSCODE_SETTLE_SECONDS = 2.0  # ウィンドウが増えなくなったと判断するまでの待ち時間
+
+_vscode_pool: dict[int, str] = {}  # まだ配置していないウィンドウ con_id -> タイトル
+_vscode_started = False
+
+
+def vscode_workspace_name(title: str) -> str | None:
+    """VS Code のウィンドウタイトルからワークスペース名を取り出す。
+    例:「index.php - ナビス (Workspace) - Code - OSS」->「ナビス」
+    ワークスペースを開いていないウィンドウでは None を返す。"""
+    m = re.match(r"^(.*) \(Workspace\)(?: - .*)?$", title)
+    if not m:
+        return None
+    return m.group(1).rsplit(" - ", 1)[-1].strip() or None
+
+
+def get_windows_by_app(app_ids: set[str]) -> dict[int, str]:
+    """指定した app_id のウィンドウを {con_id: タイトル} で返す。"""
+    tree = swaymsg_json("-t", "get_tree")
+    found: dict[int, str] = {}
+
+    def walk(node):
+        app_id = node.get("app_id") or (node.get("window_properties") or {}).get("class")
+        con_id = node.get("id")
+        if app_id in app_ids and con_id:
+            found[con_id] = node.get("name") or ""
+        for child in node.get("nodes", []) + node.get("floating_nodes", []):
+            walk(child)
+
+    walk(tree)
+    return found
+
+
+def ensure_vscode_windows():
+    """VS Code を一度だけ起動し、本体が復元し終えたウィンドウを集める。"""
+    global _vscode_started
+    if _vscode_started:
+        return
+    _vscode_started = True
+
+    if not get_windows_by_app(VSCODE_APP_IDS):
+        if not command_exists("code"):
+            log.warning("code コマンドが見つからない")
+            return
+        log.info("Launching: code (VS Code 本体の復元に任せる)")
+        try:
+            subprocess.Popen(
+                ["code"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError as e:
+            log.error(f"Launch failed: code: {e}")
+            return
+
+    # ウィンドウが増えなくなるまで待つ
+    deadline = time.time() + WINDOW_TIMEOUT
+    stable_since = None
+    windows: dict[int, str] = {}
+    while time.time() < deadline:
+        time.sleep(0.3)
+        current = get_windows_by_app(VSCODE_APP_IDS)
+        if current and current.keys() == windows.keys():
+            if stable_since is None:
+                stable_since = time.time()
+            elif time.time() - stable_since >= VSCODE_SETTLE_SECONDS:
+                windows = current
+                break
+        else:
+            stable_since = None
+        windows = current
+
+    _vscode_pool.clear()
+    _vscode_pool.update(windows)
+    log.info(
+        f"VS Code ウィンドウを {len(_vscode_pool)} 個検出: "
+        f"{list(_vscode_pool.values())}"
+    )
+
+
+def take_vscode_window(title: str) -> int | None:
+    """保存しておいたタイトルに対応する VS Code ウィンドウを取り出す。"""
+    if not _vscode_pool:
+        return None
+
+    # 1. タイトルが完全に一致するもの
+    for con_id, name in list(_vscode_pool.items()):
+        if name == title:
+            del _vscode_pool[con_id]
+            return con_id
+
+    # 2. 同じワークスペースを開いているもの（開いているファイルは変わりうる）
+    wanted = vscode_workspace_name(title)
+    if wanted:
+        for con_id, name in list(_vscode_pool.items()):
+            if vscode_workspace_name(name) == wanted:
+                del _vscode_pool[con_id]
+                return con_id
+        # 目的のワークスペースが復元されていないので、明示的に起動させる
+        return None
+
+    # 3. ワークスペースを開いていないウィンドウ同士を割り当てる
+    for con_id, name in list(_vscode_pool.items()):
+        if vscode_workspace_name(name) is None:
+            del _vscode_pool[con_id]
+            return con_id
+    return None
+
+
+def adopt_window(con_id: int) -> int:
+    """既にあるウィンドウを、現在フォーカスしている位置へ移動する。"""
+    swaymsg(f'[con_id="{con_id}"]', "move container to workspace current")
+    time.sleep(0.2)
+    return con_id
+
+
+def launch_here(command: list[str], app_id: str, title: str = "") -> int | None:
     """Launch an app at the current focus position. Returns con_id.
     Sway automatically places new windows at the focused position."""
+    if app_id in VSCODE_APP_IDS:
+        ensure_vscode_windows()
+        con_id = take_vscode_window(title)
+        if con_id is not None:
+            log.info(f"VS Code ウィンドウを再利用: con_id={con_id} title={title!r}")
+            return adopt_window(con_id)
+        log.info(f"対応する VS Code ウィンドウがないため起動する: {' '.join(command)}")
+
     if not command:
         log.warning(f"Empty command: {app_id}")
         return None
@@ -196,7 +330,7 @@ def restore_node_full(node: dict, placed: list[tuple[dict, int]]) -> int | None:
     if node["type"] == "window":
         command = node.get("command", [])
         app_id = node.get("app_id", "unknown")
-        con_id = launch_here(command, app_id)
+        con_id = launch_here(command, app_id, node.get("title", ""))
         if con_id:
             placed.append((node, con_id))
         return con_id
@@ -258,7 +392,7 @@ def restore_workspace(ws: dict) -> list[tuple[dict, int]]:
             anchor_ids.append(None)
             continue
 
-        con_id = launch_here(leaf["command"], leaf["app_id"])
+        con_id = launch_here(leaf["command"], leaf["app_id"], leaf.get("title", ""))
         if con_id:
             placed.append((leaf, con_id))
         anchor_ids.append(con_id)
@@ -387,7 +521,7 @@ def restore_floating(window: dict) -> int | None:
     """Restore a floating window."""
     command = window.get("command", [])
     app_id = window.get("app_id", "unknown")
-    con_id = launch_here(command, app_id)
+    con_id = launch_here(command, app_id, window.get("title", ""))
     if con_id is None:
         return None
 
@@ -426,6 +560,14 @@ def restore_session():
             restore_workspace(ws)
         except Exception as e:
             log.error(f"Workspace restore failed: {ws.get('name')}: {e}")
+
+    # セッションに対応がない VS Code ウィンドウが残っていれば知らせる
+    # （勝手に閉じると未保存の内容を失うため、記録だけにとどめる）
+    if _vscode_pool:
+        log.warning(
+            f"配置しなかった VS Code ウィンドウが {len(_vscode_pool)} 個残っている: "
+            f"{list(_vscode_pool.values())}"
+        )
 
     # Return to previously focused workspace
     if focused_workspace:
