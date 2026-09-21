@@ -46,7 +46,8 @@ cd sway-session-restore
 ```
 
 This will:
-- Copy scripts to `~/.local/bin/`
+- Copy scripts to `~/.local/bin/` (a destination that is a symlink is skipped, so
+  a copy managed elsewhere — dotfiles, for example — is never overwritten)
 - Install a sample `sway-session-appmap.json` (skipped if one already exists)
 - Enable the systemd auto-save timer (every 5 minutes)
 - Add `exec ~/.local/bin/sway-session-restore.py` to your Sway config (skipped if already present)

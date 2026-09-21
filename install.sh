@@ -11,13 +11,25 @@ echo ""
 # 1. Install scripts
 mkdir -p "$BIN_DIR"
 
-cp "$SCRIPT_DIR/sway-session-save.py" "$BIN_DIR/"
-cp "$SCRIPT_DIR/sway-session-restore.py" "$BIN_DIR/"
-cp "$SCRIPT_DIR/sway-shutdown.sh" "$BIN_DIR/"
-chmod +x "$BIN_DIR/sway-session-save.py"
-chmod +x "$BIN_DIR/sway-session-restore.py"
-chmod +x "$BIN_DIR/sway-shutdown.sh"
-echo "[ok] Installed scripts to $BIN_DIR/"
+# Skip destinations that are symlinks: they are managed elsewhere (e.g. dotfiles).
+# Copying onto a symlink would follow it and silently overwrite the linked file.
+install_script() {
+    local name="$1"
+    local dest="$BIN_DIR/$name"
+
+    if [ -L "$dest" ]; then
+        echo "[skip] $dest is a symlink (managed elsewhere)"
+        return
+    fi
+
+    cp "$SCRIPT_DIR/$name" "$dest"
+    chmod +x "$dest"
+    echo "[ok] Installed $name to $BIN_DIR/"
+}
+
+install_script sway-session-save.py
+install_script sway-session-restore.py
+install_script sway-shutdown.sh
 
 # 2. Install appmap (skip if already exists)
 if [ -f "$BIN_DIR/sway-session-appmap.json" ]; then
