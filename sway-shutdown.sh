@@ -14,9 +14,23 @@ if [[ "$ACTION" != "poweroff" && "$ACTION" != "reboot" ]]; then
     exit 1
 fi
 
-# ターミナルから実行された場合、swaymsg exec経由で再実行
+# blockインヒビターのチェック（デタッチ前にターミナル上で確認）
+check_inhibitors() {
+    local blockers
+    blockers=$(systemd-inhibit --list --no-pager 2>/dev/null | grep -v '^WHO' | grep 'shutdown' | grep 'block' || true)
+    if [ -n "$blockers" ]; then
+        echo "シャットダウンをブロックしているプロセスがあります:"
+        echo "$blockers"
+        notify-send -u critical "シャットダウン中止" "ブロックしているプロセスがあります" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+
+# ターミナルから実行された場合、インヒビターチェック後にswaymsg exec経由で再実行
 # （ターミナルが閉じてもスクリプトが中断しないようにする）
 if [ -z "${_SWAY_SHUTDOWN_DETACHED:-}" ]; then
+    check_inhibitors || exit 1
     SCRIPT_PATH="$(realpath "$0")"
     swaymsg "exec env _SWAY_SHUTDOWN_DETACHED=1 $SCRIPT_PATH $ACTION"
     exit 0
@@ -25,8 +39,17 @@ fi
 LOGFILE="/tmp/sway-shutdown-$(date +%Y%m%d-%H%M%S).log"
 exec > >(tee -a "$LOGFILE") 2>&1
 
+# デタッチ後の再チェック（デタッチ前チェックからの時間差で新たにインヒビターが発生した場合）
+check_inhibitors || exit 1
+
+echo "${ACTION}を開始します..."
+notify-send "シャットダウン" "${ACTION}を開始します" 2>/dev/null || true
+
 TERMINALS='com.mitchellh.ghostty Alacritty foot kitty wezterm'
 BROWSERS='google-chrome Google-chrome chromium Chromium firefox Firefox'
+# Electron 系の重いアプリ。ウィンドウ消滅後も LSP・拡張機能ホスト等の子プロセスが
+# 残り、それらが /mnt 配下に cwd を持つとアンマウントを妨げるため完全終了を待つ
+HEAVY_APPS='code code-oss codium Code Code-OSS VSCodium cursor Cursor'
 
 is_terminal() {
     local app="$1"
@@ -43,6 +66,14 @@ is_browser() {
     done
     # Chrome PWA
     [[ "$app" == chrome-* ]] && return 0
+    return 1
+}
+
+is_heavy() {
+    local app="$1"
+    for h in $HEAVY_APPS; do
+        [ "$app" = "$h" ] && return 0
+    done
     return 1
 }
 
@@ -106,6 +137,7 @@ wait_pid_gone() {
 
 # 4. ウィンドウを分類して順番に閉じる
 normal_windows=""
+heavy_windows=""
 browser_windows=""
 terminal_windows=""
 
@@ -114,6 +146,8 @@ while IFS=$'\t' read -r app con_id pid; do
         terminal_windows="${terminal_windows}${app}\t${con_id}\t${pid}\n"
     elif is_browser "$app"; then
         browser_windows="${browser_windows}${app}\t${con_id}\t${pid}\n"
+    elif is_heavy "$app"; then
+        heavy_windows="${heavy_windows}${app}\t${con_id}\t${pid}\n"
     else
         normal_windows="${normal_windows}${app}\t${con_id}\t${pid}\n"
     fi
@@ -146,6 +180,31 @@ if [ -n "$browser_windows" ]; then
         if [ -n "$local_pid" ]; then
             echo "  ${proc}の終了を待機中..."
             wait_pid_gone "$local_pid" 20
+        fi
+    done
+fi
+
+# 4b-2. Electron 系の重いアプリ（VSCode/Cursor等）を閉じて完全終了を待つ
+# ウィンドウが消えても LSP・拡張機能ホスト等が残り、それらが /mnt 配下に
+# cwd を持つとアンマウントを妨げるため、プロセスツリー終了まで待つ
+if [ -n "$heavy_windows" ]; then
+    echo "重いアプリ（Electron系）を閉じています..."
+    echo -e "$heavy_windows" | while IFS=$'\t' read -r app con_id pid; do
+        [ -z "$app" ] && continue
+        echo "  閉じています: $app (con_id=$con_id, pid=$pid)"
+        swaymsg "[con_id=$con_id]" kill 2>/dev/null || true
+        sleep 0.3
+    done
+    echo -e "$heavy_windows" | while IFS=$'\t' read -r app con_id pid; do
+        [ -z "$app" ] && continue
+        if [ "$pid" -gt 0 ] && [ -d "/proc/$pid" ]; then
+            echo "  ${app} (pid=$pid) の終了を待機中..."
+            wait_pid_gone "$pid" 30
+            if [ -d "/proc/$pid" ]; then
+                echo "    プロセスツリーに SIGTERM 送信: pid=$pid"
+                kill_process_tree "$pid"
+                wait_pid_gone "$pid" 10
+            fi
         fi
     done
 fi
