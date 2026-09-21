@@ -44,7 +44,8 @@ class FakeSway:
         self.launches: list[list[str]] = []  # 起動されたコマンド
         self.current_workspace = ""
         self._next_id = 100
-        self._vscode_reveal_at: list[tuple[float, int, str]] = []
+        # (出現時刻, con_id, app_id, タイトル)
+        self._reveal_at: list[tuple[float, int, str, str]] = []
 
     # -- swaymsg の差し替え先 --
     def swaymsg(self, *args) -> str:
@@ -68,14 +69,30 @@ class FakeSway:
     def popen(self, command, **kwargs):
         self.launches.append(list(command))
         base = Path(command[0]).name
+        now = time.time()
         if base == "code":
             # VS Code 本体が前回のウィンドウを順次復元する様子を再現する
-            now = time.time()
-            self._vscode_reveal_at = [
-                (now + 0.4, 10, "カンポス (Workspace) - Code - OSS"),
-                (now + 0.9, 20, "GMO診断設定.md - ICS研究所 (Workspace) - Code - OSS"),
-                (now + 1.4, 30, "Code - OSS"),
+            self._reveal_at += [
+                (now + 0.4, 10, "code-oss", "カンポス (Workspace) - Code - OSS"),
+                (now + 0.9, 20, "code-oss",
+                 "GMO診断設定.md - ICS研究所 (Workspace) - Code - OSS"),
+                (now + 1.4, 30, "code-oss", "Code - OSS"),
             ]
+        elif base.startswith("google-chrome") or base.startswith("chromium"):
+            if any(a.startswith("--app=") for a in command):
+                # PWA は 1 ウィンドウずつ確実に起動できるためプールの対象外
+                self._add_window("chrome-tasks.google.com__-Profile_20",
+                                 "ToDo リスト")
+            else:
+                # Chrome 本体が Profile 20 のウィンドウだけ復元する様子を再現する。
+                # 保存されている 3 つのうち 2 つしか戻らない状況にしてある。
+                # 2 つ目はタブを切り替えた想定でタイトルを変えてある。
+                self._reveal_at += [
+                    (now + 0.4, 40, "google-chrome",
+                     "株式会社カンポスラルゴスムンディアレス - Google Chrome"),
+                    (now + 0.9, 50, "google-chrome",
+                     "ICS研究所のダッシュボード - Google Chrome"),
+                ]
         else:
             self._add_window(base, base)
         return object()
@@ -84,14 +101,14 @@ class FakeSway:
     def _reveal_due(self):
         now = time.time()
         remaining = []
-        for at, con_id, title in self._vscode_reveal_at:
+        for at, con_id, app_id, title in self._reveal_at:
             if now >= at:
                 self.windows[con_id] = {
-                    "app_id": "code-oss", "name": title, "workspace": "(未配置)"
+                    "app_id": app_id, "name": title, "workspace": "(未配置)"
                 }
             else:
-                remaining.append((at, con_id, title))
-        self._vscode_reveal_at = remaining
+                remaining.append((at, con_id, app_id, title))
+        self._reveal_at = remaining
 
     def _add_window(self, app_id: str, name: str) -> int:
         con_id = self._next_id
@@ -124,33 +141,46 @@ class FakeSway:
 # --- テスト用セッション ---------------------------------------------------
 
 def build_session() -> dict:
-    def code_window(title, command, width=1714):
-        return {"type": "window", "app_id": "code-oss", "id_source": "app_id",
+    def window(app_id, title, command, width=857):
+        return {"type": "window", "app_id": app_id, "id_source": "app_id",
                 "command": command, "title": title, "width": width,
                 "height": 1434, "floating": False, "focused": False}
+
+    def code(title, command):
+        return window("code-oss", title, command)
+
+    def chrome(title):
+        return window("google-chrome", title, ["google-chrome-stable"])
+
+    def workspace(name, nodes, focused=False):
+        return {"name": name, "output": "HEADLESS-1", "layout": "splith",
+                "focused": focused, "floating_nodes": [], "nodes": nodes}
 
     return {
         "version": 1,
         "focused_workspace": "2",
         "workspaces": [
-            {"name": "1:KAMPOS", "output": "HEADLESS-1", "layout": "splith",
-             "focused": False, "floating_nodes": [], "nodes": [
-                 {"type": "window", "app_id": "com.mitchellh.ghostty",
-                  "id_source": "app_id", "command": ["ghostty"], "title": "~",
-                  "width": 827, "height": 1434, "floating": False,
-                  "focused": False},
-                 code_window("カンポス (Workspace) - Code - OSS",
-                             ["code", "/mnt/k/_workspace/カンポス.code-workspace"]),
-             ]},
-            {"name": "2", "output": "HEADLESS-1", "layout": "splith",
-             "focused": True, "floating_nodes": [], "nodes": [
-                 code_window("ICS研究所 (Workspace) - Code - OSS",
-                             ["code", "/mnt/k/_workspace/ICS研究所.code-workspace"]),
-             ]},
-            {"name": "3", "output": "HEADLESS-1", "layout": "splith",
-             "focused": False, "floating_nodes": [], "nodes": [
-                 code_window("Code - OSS", ["code"]),
-             ]},
+            workspace("1:KAMPOS", [
+                window("com.mitchellh.ghostty", "~", ["ghostty"], width=827),
+                chrome("株式会社カンポスラルゴスムンディアレス - Google Chrome"),
+                code("カンポス (Workspace) - Code - OSS",
+                     ["code", "/mnt/k/_workspace/カンポス.code-workspace"]),
+            ]),
+            workspace("2", [
+                chrome("ネットde診断 - Google Chrome"),
+                code("ICS研究所 (Workspace) - Code - OSS",
+                     ["code", "/mnt/k/_workspace/ICS研究所.code-workspace"]),
+            ], focused=True),
+            workspace("3", [
+                # Chrome が復元しない分（別プロファイル想定）
+                chrome("LINE Official Account Manager - Google Chrome"),
+                code("Code - OSS", ["code"]),
+            ]),
+            workspace("10:ToDo", [
+                window("chrome-tasks.google.com__-Profile_20", "ToDo リスト",
+                       ["google-chrome-stable", "--app=https://tasks.google.com",
+                        "--profile-directory=Profile 20"]),
+            ]),
         ],
     }
 
@@ -181,45 +211,63 @@ def main():
 
     print()
     print("=== 結果 ===")
-    print(f"起動されたコマンド: {fake.launches}")
+    print("起動されたコマンド:")
+    for c in fake.launches:
+        print(f"  {c}")
+
     code_launches = [c for c in fake.launches if Path(c[0]).name == "code"]
-    print(f"  うち code の起動回数: {len(code_launches)}")
+    chrome_bare = [c for c in fake.launches
+                   if Path(c[0]).name.startswith("google-chrome") and len(c) == 1]
+    chrome_app = [c for c in fake.launches
+                  if any(a.startswith("--app=") for a in c)]
     print()
-    print("VS Code ウィンドウの配置先:")
-    for con_id, w in sorted(fake.windows.items()):
-        if w["app_id"] == "code-oss":
-            print(f"  con_id={con_id}  workspace={w['workspace']!r}  "
-                  f"title={w['name']!r}")
+    print(f"  code の起動回数            : {len(code_launches)}")
+    print(f"  引数なし Chrome の起動回数 : {len(chrome_bare)}")
+    print(f"  PWA の起動回数             : {len(chrome_app)}")
+
     print()
-    print("その他のウィンドウ:")
+    print("ウィンドウの配置先:")
     for con_id, w in sorted(fake.windows.items()):
-        if w["app_id"] != "code-oss":
-            print(f"  con_id={con_id}  workspace={w['workspace']!r}  "
-                  f"app_id={w['app_id']}")
+        print(f"  con_id={con_id:<4} workspace={w['workspace']!r:<12} "
+              f"app_id={w['app_id']}")
+        print(f"        title={w['name']!r}")
 
     print()
     print("=== 判定 ===")
-    expected = {10: "1:KAMPOS", 20: "2", 30: "3"}
     ok = True
-    if len(code_launches) != 1:
-        print(f"  NG: code の起動が {len(code_launches)} 回（期待は 1 回）")
-        ok = False
-    else:
-        print("  OK: code の起動は 1 回だけ")
-    for con_id, want in expected.items():
-        got = fake.windows.get(con_id, {}).get("workspace")
-        if got == want:
-            print(f"  OK: con_id={con_id} -> {want}")
+
+    def check(cond, ok_msg, ng_msg):
+        nonlocal ok
+        if cond:
+            print(f"  OK: {ok_msg}")
         else:
-            print(f"  NG: con_id={con_id} -> {got!r}（期待は {want!r}）")
+            print(f"  NG: {ng_msg}")
             ok = False
+
+    check(len(code_launches) == 1, "code の起動は 1 回だけ",
+          f"code の起動が {len(code_launches)} 回（期待は 1 回）")
+    check(len(chrome_bare) == 1, "引数なし Chrome の起動は 1 回だけ",
+          f"引数なし Chrome の起動が {len(chrome_bare)} 回（期待は 1 回）")
+    check(len(chrome_app) == 1, "PWA は従来どおり個別に起動",
+          f"PWA の起動が {len(chrome_app)} 回（期待は 1 回）")
+
+    expected = {
+        10: ("1:KAMPOS", "VS Code カンポス"),
+        20: ("2", "VS Code ICS研究所（タイトル変化分）"),
+        30: ("3", "VS Code 空ウィンドウ"),
+        40: ("1:KAMPOS", "Chrome タイトル一致"),
+        50: ("2", "Chrome タイトル変化分の繰り上げ"),
+    }
+    for con_id, (want, label) in expected.items():
+        got = fake.windows.get(con_id, {}).get("workspace")
+        check(got == want, f"{label}: con_id={con_id} -> {want}",
+              f"{label}: con_id={con_id} -> {got!r}（期待は {want!r}）")
+
     leftovers = [c for c, w in fake.windows.items()
-                 if w["app_id"] == "code-oss" and w["workspace"] == "(未配置)"]
-    if leftovers:
-        print(f"  NG: 未配置の VS Code ウィンドウ {leftovers}")
-        ok = False
-    else:
-        print("  OK: 未配置の VS Code ウィンドウなし")
+                 if w["workspace"] == "(未配置)"]
+    check(not leftovers, "未配置のウィンドウなし",
+          f"未配置のウィンドウ {leftovers}")
+
     print()
     print("総合判定:", "合格" if ok else "不合格")
     return 0 if ok else 1

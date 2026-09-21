@@ -106,18 +106,30 @@ def wait_for_new_window(known_ids: set[int]) -> int | None:
     return None
 
 
-# --- VS Code の特別扱い ---------------------------------------------------
-# VS Code は window.restoreWindows の既定値 "all" により、起動時に前回のウィンドウを
-# 自分で復元する。ウィンドウごとに code を実行すると、2 回目以降は既に動いている
-# インスタンスへの呼び出しとなり、空ウィンドウが増えていく。
-# そのため起動は 1 回だけにして、本体が復元したウィンドウをタイトルで突き合わせ、
-# 各ワークスペースへ移動して使う。
+# --- 単一インスタンスで動くアプリの特別扱い -------------------------------
+# VS Code と Chrome は単一インスタンスで動き、起動すると本体が前回のウィンドウを
+# 自分で復元する。ウィンドウごとに起動コマンドを実行すると、2 回目以降は既に
+# 動いているインスタンスへの呼び出しとなり、空ウィンドウや新しいタブの
+# ウィンドウが増えていく。
+# そのため起動は 1 回だけにして、本体が復元したウィンドウを集めておき、
+# 保存しておいたタイトルと突き合わせて各ワークスペースへ移動して使う。
+#
+# Chrome の PWA ウィンドウ（app_id が chrome-<ドメイン>__-Profile_N）は
+# --app= 付きで 1 ウィンドウずつ確実に起動できるため、この仕組みの対象外。
 
-VSCODE_APP_IDS = {"code-oss", "code", "code-insiders"}
-VSCODE_SETTLE_SECONDS = 2.0  # ウィンドウが増えなくなったと判断するまでの待ち時間
+POOL_APP_IDS = {
+    "vscode": {"code-oss", "code", "code-insiders"},
+    "chrome": {"google-chrome", "Google-chrome",
+               "chromium", "Chromium", "chromium-browser"},
+}
+# app_id からプール名を引く
+POOLED_APPS = {app_id: pool
+               for pool, ids in POOL_APP_IDS.items() for app_id in ids}
 
-_vscode_pool: dict[int, str] = {}  # まだ配置していないウィンドウ con_id -> タイトル
-_vscode_started = False
+POOL_SETTLE_SECONDS = 2.0  # ウィンドウが増えなくなったと判断するまでの待ち時間
+
+_pools: dict[str, dict[int, str]] = {}  # プール名 -> {con_id: タイトル}
+_pool_started: set[str] = set()
 
 
 def vscode_workspace_name(title: str) -> str | None:
@@ -147,27 +159,27 @@ def get_windows_by_app(app_ids: set[str]) -> dict[int, str]:
     return found
 
 
-def ensure_vscode_windows():
-    """VS Code を一度だけ起動し、本体が復元し終えたウィンドウを集める。"""
-    global _vscode_started
-    if _vscode_started:
+def ensure_pool(pool: str, command: list[str]):
+    """対象アプリを一度だけ起動し、本体が復元し終えたウィンドウを集める。"""
+    if pool in _pool_started:
         return
-    _vscode_started = True
+    _pool_started.add(pool)
 
-    if not get_windows_by_app(VSCODE_APP_IDS):
-        if not command_exists("code"):
-            log.warning("code コマンドが見つからない")
+    app_ids = POOL_APP_IDS[pool]
+    if not get_windows_by_app(app_ids):
+        if not command or not command_exists(command[0]):
+            log.warning(f"起動コマンドが見つからない: {command}")
             return
-        log.info("Launching: code (VS Code 本体の復元に任せる)")
+        log.info(f"Launching: {' '.join(command)} (本体の復元に任せる)")
         try:
             subprocess.Popen(
-                ["code"],
+                command,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
         except OSError as e:
-            log.error(f"Launch failed: code: {e}")
+            log.error(f"Launch failed: {command}: {e}")
             return
 
     # ウィンドウが増えなくなるまで待つ
@@ -176,52 +188,54 @@ def ensure_vscode_windows():
     windows: dict[int, str] = {}
     while time.time() < deadline:
         time.sleep(0.3)
-        current = get_windows_by_app(VSCODE_APP_IDS)
+        current = get_windows_by_app(app_ids)
         if current and current.keys() == windows.keys():
             if stable_since is None:
                 stable_since = time.time()
-            elif time.time() - stable_since >= VSCODE_SETTLE_SECONDS:
+            elif time.time() - stable_since >= POOL_SETTLE_SECONDS:
                 windows = current
                 break
         else:
             stable_since = None
         windows = current
 
-    _vscode_pool.clear()
-    _vscode_pool.update(windows)
-    log.info(
-        f"VS Code ウィンドウを {len(_vscode_pool)} 個検出: "
-        f"{list(_vscode_pool.values())}"
-    )
+    _pools[pool] = dict(windows)
+    log.info(f"{pool} のウィンドウを {len(windows)} 個検出: {list(windows.values())}")
 
 
-def take_vscode_window(title: str) -> int | None:
-    """保存しておいたタイトルに対応する VS Code ウィンドウを取り出す。"""
-    if not _vscode_pool:
+def take_pooled_window(pool: str, title: str) -> int | None:
+    """保存しておいたタイトルに対応するウィンドウをプールから取り出す。"""
+    windows = _pools.get(pool)
+    if not windows:
         return None
 
     # 1. タイトルが完全に一致するもの
-    for con_id, name in list(_vscode_pool.items()):
+    for con_id, name in list(windows.items()):
         if name == title:
-            del _vscode_pool[con_id]
+            del windows[con_id]
             return con_id
 
-    # 2. 同じワークスペースを開いているもの（開いているファイルは変わりうる）
-    wanted = vscode_workspace_name(title)
-    if wanted:
-        for con_id, name in list(_vscode_pool.items()):
-            if vscode_workspace_name(name) == wanted:
-                del _vscode_pool[con_id]
+    if pool == "vscode":
+        # 2. 同じワークスペースを開いているもの（開いているファイルは変わりうる）
+        wanted = vscode_workspace_name(title)
+        if wanted:
+            for con_id, name in list(windows.items()):
+                if vscode_workspace_name(name) == wanted:
+                    del windows[con_id]
+                    return con_id
+            # 目的のワークスペースが復元されていない
+            return None
+        # 3. ワークスペースを開いていないウィンドウ同士を割り当てる
+        for con_id, name in list(windows.items()):
+            if vscode_workspace_name(name) is None:
+                del windows[con_id]
                 return con_id
-        # 目的のワークスペースが復元されていないので、明示的に起動させる
         return None
 
-    # 3. ワークスペースを開いていないウィンドウ同士を割り当てる
-    for con_id, name in list(_vscode_pool.items()):
-        if vscode_workspace_name(name) is None:
-            del _vscode_pool[con_id]
-            return con_id
-    return None
+    # Chrome はタイトルがアクティブなタブ由来で変わるため、残りから順に割り当てる
+    con_id = next(iter(windows))
+    del windows[con_id]
+    return con_id
 
 
 def adopt_window(con_id: int) -> int:
@@ -234,13 +248,19 @@ def adopt_window(con_id: int) -> int:
 def launch_here(command: list[str], app_id: str, title: str = "") -> int | None:
     """Launch an app at the current focus position. Returns con_id.
     Sway automatically places new windows at the focused position."""
-    if app_id in VSCODE_APP_IDS:
-        ensure_vscode_windows()
-        con_id = take_vscode_window(title)
+    pool = POOLED_APPS.get(app_id)
+    if pool:
+        ensure_pool(pool, command)
+        con_id = take_pooled_window(pool, title)
         if con_id is not None:
-            log.info(f"VS Code ウィンドウを再利用: con_id={con_id} title={title!r}")
+            log.info(f"復元済みウィンドウを再利用: con_id={con_id} title={title!r}")
             return adopt_window(con_id)
-        log.info(f"対応する VS Code ウィンドウがないため起動する: {' '.join(command)}")
+        if len(command) <= 1:
+            # 引数のない起動コマンドでは同じ内容のウィンドウを作り直せない。
+            # 起動しても空ウィンドウや新しいタブが増えるだけなので見送る。
+            log.warning(f"割り当てられるウィンドウがない: {app_id} title={title!r}")
+            return None
+        log.info(f"対応するウィンドウがないため起動する: {' '.join(command)}")
 
     if not command:
         log.warning(f"Empty command: {app_id}")
@@ -561,13 +581,14 @@ def restore_session():
         except Exception as e:
             log.error(f"Workspace restore failed: {ws.get('name')}: {e}")
 
-    # セッションに対応がない VS Code ウィンドウが残っていれば知らせる
+    # セッションに対応がないウィンドウが残っていれば知らせる
     # （勝手に閉じると未保存の内容を失うため、記録だけにとどめる）
-    if _vscode_pool:
-        log.warning(
-            f"配置しなかった VS Code ウィンドウが {len(_vscode_pool)} 個残っている: "
-            f"{list(_vscode_pool.values())}"
-        )
+    for pool, windows in _pools.items():
+        if windows:
+            log.warning(
+                f"配置しなかった {pool} のウィンドウが {len(windows)} 個残っている: "
+                f"{list(windows.values())}"
+            )
 
     # Return to previously focused workspace
     if focused_workspace:
